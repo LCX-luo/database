@@ -224,6 +224,55 @@ public:
             }
         }
 
+        // ★ FIX: 主键重复检查 — 写入数据前先检查 PK 是否已存在
+        for (size_t pk = 0; pk < columns_.size(); ++pk) {
+            if (!columns_[pk].isPrimaryKey) continue;
+            if (pk >= row.size()) break;
+            const Value& pkVal = row[pk];
+            if (hasIndex_ && pkVal.type == DataType::INT) {
+                // B+Tree 索引快速查找
+                if (index_.search(pkVal.intValue) >= 0) {
+                    return ResultSet(ERR_EXISTS,
+                        "Duplicate entry '" + pkVal.toString() + "' for primary key '" + columns_[pk].name + "'");
+                }
+            } else {
+                // 无索引时全表扫描
+                FILE* chkFile = fopen(dataFilePath_.c_str(), "rb");
+                if (chkFile) {
+                    size_t rSz = rowSize();
+                    fseek(chkFile, 0, SEEK_END);
+                    long fSz = ftell(chkFile);
+                    int64_t numRows = (rSz > 0 && fSz > 0) ? (fSz / rSz) : 0;
+                    if (numRows > 0) {
+                        Row chkRow;
+                        for (int64_t ri = 0; ri < numRows; ++ri) {
+                            chkRow = Row();
+                            fseek(chkFile, ri * rSz, SEEK_SET);
+                            for (size_t ci = 0; ci < columns_.size(); ++ci) {
+                                Value v;
+                                DataType dt;
+                                fread(&dt, sizeof(DataType), 1, chkFile);
+                                v.type = dt;
+                                if (dt == DataType::INT) {
+                                    fread(&v.intValue, sizeof(int), 1, chkFile);
+                                } else {
+                                    fread(v.strValue, 1, MAX_STRING_LEN + 1, chkFile);
+                                }
+                                chkRow.addValue(v);
+                            }
+                            if (pk < chkRow.size() && chkRow[pk] == pkVal) {
+                                fclose(chkFile);
+                                return ResultSet(ERR_EXISTS,
+                                    "Duplicate entry '" + pkVal.toString() + "' for primary key '" + columns_[pk].name + "'");
+                            }
+                        }
+                    }
+                    fclose(chkFile);
+                }
+            }
+            break; // 只检查第一个主键列
+        }
+
         // 调试：检查文件路径和当前文件大小
         fprintf(stderr, "[DBG-INSERT] path=%s\n", dataFilePath_.c_str());
         int64_t offset = 0;

@@ -35,11 +35,24 @@ private:
         return Operator::NONE;
     }
 
-    // 将字符串值解析为对应类型的 Value
+    // 将字符串值解析为对应类型的 Value（含类型校验和范围检查）
     Value parseValue(const std::string& str, DataType type) {
         std::string trimmed = trim(str);
         if (type == DataType::INT) {
-            return Value(std::stoi(trimmed));
+            try {
+                // 使用 stoll 先解析为 64 位整数，再检查范围
+                long long val = std::stoll(trimmed);
+                if (val > INT_MAX || val < INT_MIN) {
+                    return Value(0); // 调用方将通过 ResultSet 返回错误
+                }
+                return Value(static_cast<int>(val));
+            } catch (const std::invalid_argument&) {
+                // 非数字字符串 → 类型不匹配
+                return Value(0); // 调用方将通过 ResultSet 返回错误
+            } catch (const std::out_of_range&) {
+                // 数值超出 long long 范围
+                return Value(0); // 调用方将通过 ResultSet 返回错误
+            }
         } else {
             // 去除可能的引号
             if (trimmed.size() >= 2 && trimmed[0] == '"' && trimmed.back() == '"') {
@@ -239,11 +252,39 @@ private:
 
         Table table(dbName, node.tableName, columns, dataPath, idxPath);
 
-        // 构造行数据
+        // 构造行数据（含整数格式校验和范围检查）
         Row row;
         for (size_t i = 0; i < node.values.size(); ++i) {
             DataType expectedType = (i < columns.size()) ? columns[i].type : DataType::INT;
-            row.addValue(parseValue(node.values[i], expectedType));
+            std::string valStr = trim(node.values[i]);
+            if (expectedType == DataType::INT) {
+                // 校验整数格式：仅允许 [+-]?[0-9]+
+                if (valStr.empty()) {
+                    return ResultSet(ERR_TYPE, "Empty value for integer column '" + columns[i].name + "'");
+                }
+                bool validInt = true;
+                bool hasDigit = false;
+                for (size_t c = 0; c < valStr.size(); ++c) {
+                    if (c == 0 && (valStr[c] == '-' || valStr[c] == '+')) continue;
+                    if (valStr[c] >= '0' && valStr[c] <= '9') { hasDigit = true; continue; }
+                    validInt = false; break;
+                }
+                if (!validInt || !hasDigit) {
+                    return ResultSet(ERR_TYPE, "Invalid integer value '" + valStr + "' for column '" + columns[i].name + "'");
+                }
+                // 范围检查（使用 stoll 避免 stoi 溢出崩溃）
+                try {
+                    long long llVal = std::stoll(valStr);
+                    if (llVal > INT_MAX || llVal < INT_MIN) {
+                        return ResultSet(ERR_TYPE, "Integer value '" + valStr + "' out of range for column '" + columns[i].name + "'");
+                    }
+                    row.addValue(Value(static_cast<int>(llVal)));
+                } catch (const std::exception&) {
+                    return ResultSet(ERR_TYPE, "Invalid integer value '" + valStr + "' for column '" + columns[i].name + "'");
+                }
+            } else {
+                row.addValue(parseValue(node.values[i], expectedType));
+            }
         }
 
         // 外键约束校验：插入的值必须在父表中有对应记录
