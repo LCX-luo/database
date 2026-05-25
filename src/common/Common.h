@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <ctime>
 
 namespace minidb {
 
@@ -60,6 +61,15 @@ constexpr int MAX_STRING_LEN = 256;
 constexpr int BPLUS_ORDER = 4;
 // 默认服务器端口
 constexpr int DEFAULT_PORT = 23333;
+
+// 获取当前时间戳字符串 [HH:MM:SS]
+inline std::string timestamp() {
+    time_t now = time(nullptr);
+    struct tm* tm = localtime(&now);
+    char buf[16];
+    strftime(buf, sizeof(buf), "%H:%M:%S", tm);
+    return "[" + std::string(buf) + "]";
+}
 
 // 将字符串转为小写
 inline std::string toLower(const std::string& str) {

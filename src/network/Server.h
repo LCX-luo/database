@@ -40,8 +40,8 @@ public:
             return false;
         }
         running_ = true;
-        std::cout << "Server started on port " << port_ << std::endl;
-        std::cout << "Waiting for connections..." << std::endl;
+        std::cout << timestamp() << " Server started on port " << port_ << std::endl;
+        std::cout << timestamp() << " Waiting for connections..." << std::endl;
 
         while (running_) {
             Socket clientSocket = serverSocket_.accept();
@@ -66,12 +66,12 @@ public:
 
 private:
     void handleClient(Socket clientSocket) {
-        std::cout << "New client connected" << std::endl;
+        std::cout << timestamp() << " New client connected" << std::endl;
 
         while (true) {
             std::string request = clientSocket.receive();
             if (request.empty()) {
-                std::cout << "Client disconnected" << std::endl;
+                std::cout << timestamp() << " Client disconnected" << std::endl;
                 break;
             }
 
@@ -91,7 +91,7 @@ private:
                 sql = request;
             }
 
-            std::cout << "Execute: " << sql << std::endl;
+            std::cout << timestamp() << " Execute: " << sql << std::endl;
 
             // 检查 exit
             if (toLower(trim(sql)) == "exit") {

@@ -43,7 +43,7 @@ public:
             return false;
         }
         connected_ = true;
-        std::cout << "Connected to MiniDB server at " 
+        std::cout << timestamp() << " Connected to MiniDB server at "
                   << serverIp_ << ":" << port_ << std::endl;
         return true;
     }
@@ -96,6 +96,59 @@ public:
         std::string inputBuffer;
         std::string prompt = "minidb> ";
 
+        // 判断一个词是否为"新语句起始关键字"（select 除外，因为它可能出现在 CREATE VIEW ... AS 之后）
+        auto isNewStmtKeyword = [](const std::string& w) -> bool {
+            return w == "create" || w == "drop" || w == "use"
+                || w == "insert" || w == "update" || w == "delete"
+                || w == "exit";
+        };
+
+        // 提取一行文本的第一个词的 lower 版
+        auto firstWordLower = [](const std::string& s) -> std::string {
+            std::stringstream ss(s);
+            std::string w;
+            ss >> w;
+            return toLower(w);
+        };
+
+        // 执行单条 SQL 并输出结果；返回 true = exit 信号
+        auto execAndPrint = [&](const std::string& sql) -> bool {
+            if (sql.empty()) return false;
+            std::string lower = toLower(sql);
+            if (lower == "exit") {
+                std::cout << "Bye" << std::endl;
+                disconnect();
+                return true;
+            }
+            // ★ FIX: 历史记录带 ; 存储，↑ 调出后可直接回车执行
+            add_history((sql + ";").c_str());
+            ResultSet rs = executeSQL(sql);
+            std::cout << timestamp() << " " << rs.format() << std::endl;
+            return false;
+        };
+
+        // 将整个缓冲区按 ; 分割执行，处理残余文本
+        auto flushBuffer = [&]() -> bool {
+            if (inputBuffer.empty()) return false;
+
+            size_t start = 0;
+            size_t end;
+            while ((end = inputBuffer.find(';', start)) != std::string::npos) {
+                std::string stmt = trim(inputBuffer.substr(start, end - start));
+                start = end + 1;
+                if (stmt.empty()) continue;
+                if (execAndPrint(stmt)) return true;
+            }
+            // 最后一个 ; 后的残余文本
+            std::string rest = trim(inputBuffer.substr(start));
+            if (!rest.empty()) {
+                if (execAndPrint(rest)) return true;
+            }
+            inputBuffer.clear();
+            prompt = "minidb> ";
+            return false;
+        };
+
         while (true) {
             char* rawLine = readline(prompt.c_str());
             if (!rawLine) { // EOF (Ctrl+D)
@@ -116,65 +169,40 @@ public:
                 continue;
             }
 
-            // 检查本地退出（仅在一行输入、无缓冲区时）
-            if (inputBuffer.empty() && toLower(trimmed) == "exit") {
-                std::cout << "Bye" << std::endl;
-                break;
+            std::string firstLower = firstWordLower(trimmed);
+
+            // ★ 核心修复：当缓冲区非空且新行以新语句关键字开头时，
+            //   先将缓冲区中的内容作为完整语句执行（追加虚拟 ; 触发分割）。
+            //   这样 "use school"（无 ;）+ 换行 + "drop school" 可以正确拆分。
+            //   select 不在关键字列表中，所以 CREATE VIEW ... AS 换行后的 SELECT 不会误触发。
+            if (!inputBuffer.empty() && isNewStmtKeyword(firstLower)) {
+                inputBuffer += ";";
+                if (flushBuffer()) return;
             }
 
-            // 追加到输入缓冲区
+            // 追加到缓冲区
             if (!inputBuffer.empty()) {
                 inputBuffer += " ";
             }
             inputBuffer += trimmed;
 
-            // 检查是否包含分号
-            size_t semiPos = inputBuffer.find(';');
-            if (semiPos == std::string::npos) {
-                // 没有分号 → 多行续入模式
+            // 当前行包含分号？
+            bool currentLineHasSemi = (trimmed.find(';') != std::string::npos);
+
+            // 本地退出（仅单行、无缓冲区、无分号时）
+            if (inputBuffer.empty() && !currentLineHasSemi && firstLower == "exit") {
+                std::cout << "Bye" << std::endl;
+                break;
+            }
+
+            if (!currentLineHasSemi) {
+                // 无分号 → 多行续入模式
                 prompt = "-> ";
                 continue;
             }
 
-            // --- 有分号，分割并逐条执行 ---
-            bool endsWithSemi = (inputBuffer.back() == ';');
-
-            size_t start = 0;
-            size_t end;
-            while ((end = inputBuffer.find(';', start)) != std::string::npos) {
-                std::string stmt = trim(inputBuffer.substr(start, end - start));
-                start = end + 1;
-                if (stmt.empty()) continue;
-
-                // 检查内联 exit
-                if (toLower(stmt) == "exit") {
-                    std::cout << "Bye" << std::endl;
-                    disconnect();
-                    return;
-                }
-
-                // 加入命令历史
-                add_history(stmt.c_str());
-
-                // 发送并显示结果
-                ResultSet rs = executeSQL(stmt);
-                std::cout << rs.format() << std::endl;
-            }
-
-            // 处理分号后的剩余文本
-            std::string rest = trim(inputBuffer.substr(start));
-            if (endsWithSemi) {
-                // 末尾有分号 → 全部已执行，清空缓冲区
-                inputBuffer.clear();
-                prompt = "minidb> ";
-            } else if (!rest.empty()) {
-                // 末尾无分号 → 剩余文本作为续入
-                inputBuffer = rest;
-                prompt = "-> ";
-            } else {
-                inputBuffer.clear();
-                prompt = "minidb> ";
-            }
+            // 有分号 → 分割执行
+            if (flushBuffer()) return;
         }
 
         disconnect();

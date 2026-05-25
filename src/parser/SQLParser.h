@@ -4,6 +4,7 @@
 #include <string>
 #include <sstream>
 #include <memory>
+#include <vector>
 #include "Common.h"
 #include "ASTNode.h"
 #include "ArrayList.h"
@@ -101,7 +102,12 @@ private:
             ss >> tableName;
             if (tableName.empty()) return nullptr;
 
-            // 读取列定义部分：找 '(' 和 ')'
+            // ★ FIX: 表名可能含 (（如 "student(id..."），去掉括号及之后的内容
+            size_t parenInName = tableName.find('(');
+            if (parenInName != std::string::npos) {
+                tableName = tableName.substr(0, parenInName);
+            }
+
             auto node = std::make_unique<CreateTableNode>();
             node->tableName = tableName;
 
@@ -115,34 +121,50 @@ private:
 
             if (parenStart != std::string::npos && parenEnd != std::string::npos) {
                 std::string colsStr = original.substr(parenStart + 1, parenEnd - parenStart - 1);
-                std::stringstream colSs(colsStr);
-                std::string colDef;
 
-                while (std::getline(colSs, colDef, ',')) {
-                    colDef = trim(colDef);
+                // ★ FIX: 智能按逗号拆分，识别括号层级，避免拆坏 primary key(sid,cid)
+                auto smartSplit = [](const std::string& s) -> std::vector<std::string> {
+                    std::vector<std::string> result;
+                    std::string current;
+                    int depth = 0;
+                    for (char c : s) {
+                        if (c == '(') depth++;
+                        else if (c == ')') depth--;
+                        if (c == ',' && depth == 0) {
+                            result.push_back(trim(current));
+                            current.clear();
+                        } else {
+                            current += c;
+                        }
+                    }
+                    if (!current.empty()) {
+                        result.push_back(trim(current));
+                    }
+                    return result;
+                };
+
+                for (const std::string& colDef : smartSplit(colsStr)) {
                     if (colDef.empty()) continue;
 
-                    // 检查是否是 FOREIGN KEY 定义
                     std::string lowerDef = toLower(colDef);
+
+                    // 检查是否是 FOREIGN KEY 定义
                     if (lowerDef.find("foreign") == 0) {
-                        // 格式: foreign key (col) references parent_table(col) [on delete cascade]
-                        // 从 lowerDef 中解析
                         std::stringstream fkSs(lowerDef);
                         std::string fkKw, keyKw;
-                        fkSs >> fkKw >> keyKw; // "foreign" "key"
-                        
-                        // 读取 (colName)
+                        fkSs >> fkKw >> keyKw;
+
                         std::string parenPart;
-                        fkSs >> parenPart; // "(colName)"
+                        fkSs >> parenPart;
                         if (parenPart.size() >= 2 && parenPart.front() == '(' && parenPart.back() == ')') {
                             std::string fkCol = parenPart.substr(1, parenPart.size() - 2);
-                            
+
                             std::string refKw;
-                            fkSs >> refKw; // "references"
-                            
+                            fkSs >> refKw;
+
                             std::string refTableRef;
-                            fkSs >> refTableRef; // "parent_table(col)" or "parent_table"
-                            
+                            fkSs >> refTableRef;
+
                             std::string refTable, refCol;
                             size_t refParen = refTableRef.find('(');
                             if (refParen != std::string::npos) {
@@ -152,7 +174,7 @@ private:
                                     refCol = refTableRef.substr(refParen + 1, refParenEnd - refParen - 1);
                                 }
                             }
-                            
+
                             bool cascade = false;
                             std::string onKw, deleteKw;
                             if (fkSs >> onKw >> deleteKw) {
@@ -161,7 +183,7 @@ private:
                                     cascade = (cascadeKw == "cascade");
                                 }
                             }
-                            
+
                             if (!fkCol.empty() && !refTable.empty() && !refCol.empty()) {
                                 ForeignKeyDef fk(fkCol, refTable, refCol, cascade);
                                 node->foreignKeys.push_back(fk);
@@ -170,12 +192,16 @@ private:
                         continue;
                     }
 
+                    // ★ FIX: 跳过 primary key(...) 定义（不是列定义）
+                    if (lowerDef.find("primary") == 0) {
+                        continue;
+                    }
+
                     std::stringstream defSs(colDef);
                     ColumnDef col;
                     defSs >> col.name;
                     defSs >> col.type;
 
-                    // 检查是否有 primary 关键字
                     std::string extra;
                     if (defSs >> extra) {
                         std::string extraLower = toLower(extra);
