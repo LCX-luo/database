@@ -69,6 +69,8 @@ public:
         }
 
         // 对于 select 查询，显示表格
+        // ★ FIX: 表格前置换行，避免时间戳与表格顶线挤在同一行
+        oss << "\n";
 
         // 计算每列宽度
         ArrayList<size_t> widths;
