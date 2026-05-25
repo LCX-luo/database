@@ -528,6 +528,61 @@ public:
         file.close();
     }
 
+    // 检查指定列中是否存在某值（用于外键约束检查）
+    bool existsByKey(const std::string& columnName, const Value& val) {
+        std::fstream file(dataFilePath_, std::ios::in | std::ios::binary);
+        if (!file.is_open()) return false;
+
+        file.seekg(0, std::ios::end);
+        int64_t fileSize = file.tellg();
+        size_t rSize = rowSize();
+        if (rSize == 0) { file.close(); return false; }
+        int64_t numRows = fileSize / rSize;
+
+        // 找到列索引
+        int colIdx = -1;
+        for (size_t i = 0; i < columns_.size(); ++i) {
+            if (columns_[i].name == columnName) {
+                colIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        if (colIdx < 0) { file.close(); return false; }
+
+        // 如果是有索引的主键等值查询，使用索引优化
+        if (hasIndex_ && val.type == DataType::INT) {
+            for (size_t i = 0; i < columns_.size(); ++i) {
+                if (columns_[i].isPrimaryKey && columns_[i].name == columnName) {
+                    int64_t offset = index_.search(val.intValue);
+                    file.close();
+                    return offset >= 0;
+                }
+            }
+        }
+
+        // 全表扫描
+        for (int64_t i = 0; i < numRows; ++i) {
+            Row row = readRow(file, i * rSize);
+            if (row[colIdx] == val) {
+                file.close();
+                return true;
+            }
+        }
+
+        file.close();
+        return false;
+    }
+
+    // 查找指定列匹配某值的所有行（用于级联删除）
+    void findMatchingRows(const std::string& columnName, const Value& val,
+                          ArrayList<int64_t>& outOffsets, ArrayList<Row>& outRows) {
+        ArrayList<int64_t> offsets;
+        ArrayList<Row> rows;
+        scanRows(offsets, rows, columnName, Operator::EQ, val);
+        outOffsets = std::move(offsets);
+        outRows = std::move(rows);
+    }
+
     // 删除表文件
     ResultSet drop() {
         ::remove(dataFilePath_.c_str());

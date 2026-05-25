@@ -45,6 +45,24 @@ public:
     }
 };
 
+/**
+ * @brief 外键定义
+ * 
+ * 描述一个外键约束：子表列名、父表表名、父表列名、级联行为。
+ */
+struct ForeignKeyDef {
+    std::string column;         // 子表中的外键列名
+    std::string refTable;       // 被引用的父表表名
+    std::string refColumn;      // 被引用的父表列名
+    bool onDeleteCascade;       // 是否 ON DELETE CASCADE
+
+    ForeignKeyDef() : onDeleteCascade(false) {}
+
+    ForeignKeyDef(const std::string& col, const std::string& rt,
+                  const std::string& rc, bool cascade = false)
+        : column(col), refTable(rt), refColumn(rc), onDeleteCascade(cascade) {}
+};
+
 } // namespace minidb
 
 #endif // COLUMN_H

@@ -114,7 +114,7 @@ data/                           # 数据根目录
 | CREATE DATABASE | `create database <dbname>` | 创建数据库目录 |
 | DROP DATABASE | `drop database <dbname>` | 删除数据库及其所有文件 |
 | USE | `use <dbname>` | 切换当前数据库 |
-| CREATE TABLE | `create table <name> (<col> <type> [primary], ...)` | 创建表，支持 int/string，主键自动建B+树索引 |
+| CREATE TABLE | `create table <name> (<col> <type> [primary], ..., foreign key (<col>) references <table>(<col>) [on delete cascade])` | 创建表，支持 int/string，主键自动建B+树索引，支持外键约束与级联删除 |
 | DROP TABLE | `drop table <name>` | 删除表及索引文件 |
 | CREATE VIEW | `create view <name> as select <cols> from <table> [where <cond>]` | 创建视图，基于源表的虚拟表 |
 | DROP VIEW | `drop view <name>` | 删除视图定义 |
@@ -512,9 +512,9 @@ database/                           # 项目根目录
 =======================================
 Test 1: ArrayList basic operations ... PASS
 ...
-Test 42: Drop database ... PASS
+Test 60: Drop FK database ... PASS
 =======================================
-  Results: 42/42 tests passed
+  Results: 60/60 tests passed
 =======================================
 ```
 
@@ -524,10 +524,11 @@ Test 42: Drop database ... PASS
 |:---|:---:|:---|
 | ArrayList | 4 | 基本操作、查找、拷贝、迭代器 |
 | Value | 4 | 创建、比较、序列化 |
-| SQLParser | 14 | 全部11种语句+where+视图解析 |
+| SQLParser | 16 | 全部11种语句+where+视图解析+外键解析 |
 | BPlusTree | 2 | 插入查找、中序遍历 |
 | 集成测试 | 18 | 完整数据库生命周期+视图CRUD |
-| **总计** | **42** | **全部通过** |
+| 外键约束 | 18 | 外键创建/插入校验/引用拒绝/级联删除/DROP保护 |
+| **总计** | **60** | **全部通过** |
 
 ---
 

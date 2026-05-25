@@ -4,12 +4,13 @@
 #include <string>
 #include "Common.h"
 #include "ArrayList.h"
+#include "Column.h"
 
 namespace minidb {
 
 /**
  * @brief 抽象语法树节点基类
- * 
+ *
  * SQL解析结果以AST表示，每个语句类型对应一个派生类。
  */
 
@@ -58,10 +59,11 @@ struct ColumnDef {
     ColumnDef() : isPrimaryKey(false) {}
 };
 
-// CREATE TABLE
+// CREATE TABLE（支持外键）
 struct CreateTableNode : ASTNode {
     std::string tableName;
     ArrayList<ColumnDef> columns;
+    ArrayList<ForeignKeyDef> foreignKeys;
     CreateTableNode() : ASTNode(StatementType::CREATE_TABLE) {}
 };
 

@@ -127,6 +127,28 @@ private:
             return ResultSet(ERR_EXISTS, "Table '" + node.tableName + "' already exists");
         }
 
+        // 校验外键引用的父表是否存在
+        for (size_t i = 0; i < node.foreignKeys.size(); ++i) {
+            const ForeignKeyDef& fk = node.foreignKeys[i];
+            if (!storage_.tableExists(dbName, fk.refTable)) {
+                return ResultSet(ERR_NOT_FOUND,
+                    "Foreign key references table '" + fk.refTable + "' which does not exist");
+            }
+            // 检查父表中是否存在被引用的列
+            ArrayList<Column> parentCols = storage_.loadTableSchema(dbName, fk.refTable);
+            bool refColFound = false;
+            for (size_t j = 0; j < parentCols.size(); ++j) {
+                if (parentCols[j].name == fk.refColumn) {
+                    refColFound = true;
+                    break;
+                }
+            }
+            if (!refColFound) {
+                return ResultSet(ERR_NOT_FOUND,
+                    "Foreign key references column '" + fk.refColumn + "' which does not exist in table '" + fk.refTable + "'");
+            }
+        }
+
         // 转换列定义
         ArrayList<Column> columns;
         for (size_t i = 0; i < node.columns.size(); ++i) {
@@ -141,8 +163,25 @@ private:
         ResultSet rs = table.create();
         if (rs.code != SUCCESS) return rs;
 
-        // 保存元数据
-        rs = storage_.saveTableSchema(dbName, node.tableName, columns);
+        // 保存元数据（含外键定义）
+        rs = storage_.saveTableSchema(dbName, node.tableName, columns, node.foreignKeys);
+        if (rs.code != SUCCESS) return rs;
+
+        // 检查外键列是否存在于当前表的列定义中
+        for (size_t i = 0; i < node.foreignKeys.size(); ++i) {
+            bool fkColFound = false;
+            for (size_t j = 0; j < node.columns.size(); ++j) {
+                if (node.columns[j].name == node.foreignKeys[i].column) {
+                    fkColFound = true;
+                    break;
+                }
+            }
+            if (!fkColFound) {
+                return ResultSet(ERR_NOT_FOUND,
+                    "Foreign key column '" + node.foreignKeys[i].column + "' not found in table '" + node.tableName + "'");
+            }
+        }
+
         return rs;
     }
 
@@ -154,6 +193,18 @@ private:
 
         if (!storage_.tableExists(dbName, node.tableName)) {
             return ResultSet(ERR_NOT_FOUND, "Table '" + node.tableName + "' not found");
+        }
+
+        // 检查是否有其他表通过外键引用此表
+        ArrayList<std::string> refTables = storage_.getReferencingTables(dbName, node.tableName);
+        if (refTables.size() > 0) {
+            std::string refList;
+            for (size_t i = 0; i < refTables.size(); ++i) {
+                if (i > 0) refList += ", ";
+                refList += refTables[i];
+            }
+            return ResultSet(ERR_GENERAL,
+                "Cannot drop table '" + node.tableName + "' because it is referenced by foreign key constraints from table(s): " + refList);
         }
 
         // 加载表信息以获取索引
@@ -193,6 +244,33 @@ private:
         for (size_t i = 0; i < node.values.size(); ++i) {
             DataType expectedType = (i < columns.size()) ? columns[i].type : DataType::INT;
             row.addValue(parseValue(node.values[i], expectedType));
+        }
+
+        // 外键约束校验：插入的值必须在父表中有对应记录
+        ArrayList<ForeignKeyDef> fks = storage_.loadTableForeignKeys(dbName, node.tableName);
+        for (size_t i = 0; i < fks.size(); ++i) {
+            const ForeignKeyDef& fk = fks[i];
+            // 找到外键列在行中的索引
+            int fkColIdx = -1;
+            for (size_t j = 0; j < columns.size(); ++j) {
+                if (columns[j].name == fk.column) {
+                    fkColIdx = static_cast<int>(j);
+                    break;
+                }
+            }
+            if (fkColIdx < 0 || fkColIdx >= static_cast<int>(row.size())) continue;
+
+            // 加载父表并检查值是否存在
+            ArrayList<Column> parentCols = storage_.loadTableSchema(dbName, fk.refTable);
+            std::string parentDataPath = storage_.getTableDataPath(dbName, fk.refTable);
+            std::string parentIdxPath = storage_.getIndexFilePath(dbName, fk.refTable);
+            Table parentTable(dbName, fk.refTable, parentCols, parentDataPath, parentIdxPath);
+
+            if (!parentTable.existsByKey(fk.refColumn, row[fkColIdx])) {
+                return ResultSet(ERR_GENERAL,
+                    "Foreign key constraint violation: value '" + row[fkColIdx].toString() +
+                    "' in column '" + fk.column + "' not found in '" + fk.refTable + "." + fk.refColumn + "'");
+            }
         }
 
         return table.insert(row);
@@ -403,6 +481,25 @@ private:
             setVal = parseValue(node.setValue, columns[setColIdx].type);
         }
 
+        // 外键约束校验：如果正在更新的列是外键列，新值必须在父表中存在
+        ArrayList<ForeignKeyDef> fks = storage_.loadTableForeignKeys(dbName, node.tableName);
+        for (size_t i = 0; i < fks.size(); ++i) {
+            if (fks[i].column == node.setColumn) {
+                ArrayList<Column> parentCols = storage_.loadTableSchema(dbName, fks[i].refTable);
+                std::string parentDataPath = storage_.getTableDataPath(dbName, fks[i].refTable);
+                std::string parentIdxPath = storage_.getIndexFilePath(dbName, fks[i].refTable);
+                Table parentTable(dbName, fks[i].refTable, parentCols, parentDataPath, parentIdxPath);
+
+                if (!parentTable.existsByKey(fks[i].refColumn, setVal)) {
+                    return ResultSet(ERR_GENERAL,
+                        "Foreign key constraint violation: value '" + setVal.toString() +
+                        "' in column '" + node.setColumn + "' not found in '" +
+                        fks[i].refTable + "." + fks[i].refColumn + "'");
+                }
+                break;
+            }
+        }
+
         return table.update(node.setColumn, setVal, node.condition.column, op, whereVal);
     }
 
@@ -437,6 +534,61 @@ private:
                 whereVal = parseValue(node.condition.value, columns[colIdx].type);
             } else {
                 whereVal = inferValue(node.condition.value);
+            }
+        }
+
+        // 外键约束检查：检查是否有其他表引用了此表
+        ArrayList<std::string> refTables = storage_.getReferencingTables(dbName, node.tableName);
+        
+        if (refTables.size() > 0) {
+            // 先查询要删除的匹配行
+            ArrayList<std::string> starCols;
+            starCols.push_back("*");
+            Table scanTable(dbName, node.tableName, columns, dataPath, idxPath);
+            ResultSet selectRs = scanTable.select(starCols, node.condition.column, op, whereVal);
+            
+            if (selectRs.rows.size() > 0) {
+                // 遍历所有引用表的外键定义
+                for (size_t ri = 0; ri < refTables.size(); ++ri) {
+                    ArrayList<ForeignKeyDef> childFks = storage_.loadTableForeignKeys(dbName, refTables[ri]);
+                    for (size_t fki = 0; fki < childFks.size(); ++fki) {
+                        if (childFks[fki].refTable != node.tableName) continue;
+                        
+                        // 找到父表中被引用列的索引
+                        int refColIdx = -1;
+                        for (size_t ci = 0; ci < columns.size(); ++ci) {
+                            if (columns[ci].name == childFks[fki].refColumn) {
+                                refColIdx = static_cast<int>(ci);
+                                break;
+                            }
+                        }
+                        if (refColIdx < 0) continue;
+                        
+                        // 加载子表信息
+                        ArrayList<Column> childCols = storage_.loadTableSchema(dbName, refTables[ri]);
+                        std::string childDataPath = storage_.getTableDataPath(dbName, refTables[ri]);
+                        std::string childIdxPath = storage_.getIndexFilePath(dbName, refTables[ri]);
+                        
+                        // 对于每个被删除的行，执行级联删除或拒绝
+                        for (size_t rj = 0; rj < selectRs.rows.size(); ++rj) {
+                            Value refVal = selectRs.rows[rj][refColIdx];
+                            
+                            if (childFks[fki].onDeleteCascade) {
+                                // 级联删除子表中匹配的行
+                                Table childTable(dbName, refTables[ri], childCols, childDataPath, childIdxPath);
+                                childTable.remove(childFks[fki].column, Operator::EQ, refVal);
+                            } else {
+                                // 检查子表中是否有引用此值的行
+                                Table childTable(dbName, refTables[ri], childCols, childDataPath, childIdxPath);
+                                if (childTable.existsByKey(childFks[fki].column, refVal)) {
+                                    return ResultSet(ERR_GENERAL,
+                                        "Foreign key constraint violation: row in table '" + node.tableName +
+                                        "' is referenced by table '" + refTables[ri] + "'");
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

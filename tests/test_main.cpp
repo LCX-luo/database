@@ -483,6 +483,151 @@ void testStorageAndExecutor() {
     END_TEST;
 }
 
+// ==================== 测试外键约束 ====================
+void testForeignKey() {
+    system("rm -rf data/test_fk_db");
+
+    StorageEngine storage;
+    Executor executor(storage);
+
+    TEST("Create FK database") {
+        ResultSet rs = executor.execute(*SQLParser().parse("create database test_fk_db"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Use FK database") {
+        ResultSet rs = executor.execute(*SQLParser().parse("use test_fk_db"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Create parent table (departments)") {
+        ResultSet rs = executor.execute(*SQLParser().parse("create table departments (id int primary, name string)"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Insert parent data") {
+        ResultSet rs = executor.execute(*SQLParser().parse("insert departments values(1, \"Engineering\")"));
+        assert(rs.code == SUCCESS);
+        rs = executor.execute(*SQLParser().parse("insert departments values(2, \"HR\")"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Parse create table with foreign key") {
+        auto node = SQLParser().parse("create table employees (id int primary, dept_id int, foreign key (dept_id) references departments(id))");
+        assert(node != nullptr);
+        assert(node->type == StatementType::CREATE_TABLE);
+        auto* ctNode = static_cast<CreateTableNode*>(node.get());
+        assert(ctNode->foreignKeys.size() == 1);
+        assert(ctNode->foreignKeys[0].column == "dept_id");
+        assert(ctNode->foreignKeys[0].refTable == "departments");
+        assert(ctNode->foreignKeys[0].refColumn == "id");
+        assert(ctNode->foreignKeys[0].onDeleteCascade == false);
+    }
+    END_TEST;
+
+    TEST("Create child table with foreign key") {
+        ResultSet rs = executor.execute(*SQLParser().parse("create table employees (id int primary, dept_id int, foreign key (dept_id) references departments(id))"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Insert valid FK value") {
+        ResultSet rs = executor.execute(*SQLParser().parse("insert employees values(101, 1)"));
+        assert(rs.code == SUCCESS);
+        assert(rs.affectedRows == 1);
+    }
+    END_TEST;
+
+    TEST("Insert another valid FK value") {
+        ResultSet rs = executor.execute(*SQLParser().parse("insert employees values(102, 2)"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Reject insert with invalid FK value") {
+        // dept_id=99 does not exist in departments
+        ResultSet rs = executor.execute(*SQLParser().parse("insert employees values(103, 99)"));
+        assert(rs.code != SUCCESS);  // 应该被拒绝
+    }
+    END_TEST;
+
+    TEST("Reject delete parent row referenced by child (no cascade)") {
+        ResultSet rs = executor.execute(*SQLParser().parse("delete departments where id = 1"));
+        assert(rs.code != SUCCESS);  // employees 引用了 id=1
+    }
+    END_TEST;
+
+    TEST("Parse FK with ON DELETE CASCADE") {
+        auto node = SQLParser().parse("create table tasks (id int primary, dept_id int, foreign key (dept_id) references departments(id) on delete cascade)");
+        assert(node != nullptr);
+        assert(node->type == StatementType::CREATE_TABLE);
+        auto* ctNode = static_cast<CreateTableNode*>(node.get());
+        assert(ctNode->foreignKeys.size() == 1);
+        assert(ctNode->foreignKeys[0].column == "dept_id");
+        assert(ctNode->foreignKeys[0].refTable == "departments");
+        assert(ctNode->foreignKeys[0].refColumn == "id");
+        assert(ctNode->foreignKeys[0].onDeleteCascade == true);
+    }
+    END_TEST;
+
+    TEST("Create task table with CASCADE") {
+        ResultSet rs = executor.execute(*SQLParser().parse("create table tasks (id int primary, dept_id int, foreign key (dept_id) references departments(id) on delete cascade)"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Insert task data referencing department") {
+        ResultSet rs = executor.execute(*SQLParser().parse("insert tasks values(1, 1)"));
+        assert(rs.code == SUCCESS);
+        rs = executor.execute(*SQLParser().parse("insert tasks values(2, 1)"));
+        assert(rs.code == SUCCESS);
+        rs = executor.execute(*SQLParser().parse("insert tasks values(3, 2)"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("CASCADE delete - delete parent cascades to children") {
+        // Delete Engineering department (id=1), should cascade delete tasks 1 and 2
+        ResultSet rs = executor.execute(*SQLParser().parse("delete departments where id = 1"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Verify cascade - task rows deleted") {
+        ResultSet rs = executor.execute(*SQLParser().parse("select * from tasks"));
+        assert(rs.code == SUCCESS);
+        assert(rs.rows.size() == 1);  // 只有 task 3 (dept_id=2) 剩下
+        assert(rs.rows[0][0].toString() == "3");
+    }
+    END_TEST;
+
+    TEST("Reject drop table referenced by FK") {
+        ResultSet rs = executor.execute(*SQLParser().parse("drop table departments"));
+        assert(rs.code != SUCCESS);  // 被 employees 和 tasks 引用
+    }
+    END_TEST;
+
+    TEST("Drop child table first, then parent") {
+        ResultSet rs = executor.execute(*SQLParser().parse("drop table employees"));
+        assert(rs.code == SUCCESS);
+        rs = executor.execute(*SQLParser().parse("drop table tasks"));
+        assert(rs.code == SUCCESS);
+        rs = executor.execute(*SQLParser().parse("drop table departments"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Drop FK database") {
+        ResultSet rs = executor.execute(*SQLParser().parse("drop database test_fk_db"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+}
+
 int main() {
     std::cout << "=======================================" << std::endl;
     std::cout << "  MiniDB Unit Tests" << std::endl;
@@ -493,6 +638,7 @@ int main() {
     testParser();
     testBPlusTree();
     testStorageAndExecutor();
+    testForeignKey();
 
     std::cout << "=======================================" << std::endl;
     std::cout << "  Results: " << passCount << "/" << testCount << " tests passed" << std::endl;

@@ -107,11 +107,10 @@ private:
 
             // 找括号
             size_t parenStart = original.find('(');
-            size_t parenEnd = original.find(')');
+            size_t parenEnd = original.rfind(')');
             if (parenStart == std::string::npos || parenEnd == std::string::npos) {
-                // 没有括号，尝试用 lower 找
                 parenStart = lower.find('(');
-                parenEnd = lower.find(')');
+                parenEnd = lower.rfind(')');
             }
 
             if (parenStart != std::string::npos && parenEnd != std::string::npos) {
@@ -122,6 +121,54 @@ private:
                 while (std::getline(colSs, colDef, ',')) {
                     colDef = trim(colDef);
                     if (colDef.empty()) continue;
+
+                    // 检查是否是 FOREIGN KEY 定义
+                    std::string lowerDef = toLower(colDef);
+                    if (lowerDef.find("foreign") == 0) {
+                        // 格式: foreign key (col) references parent_table(col) [on delete cascade]
+                        // 从 lowerDef 中解析
+                        std::stringstream fkSs(lowerDef);
+                        std::string fkKw, keyKw;
+                        fkSs >> fkKw >> keyKw; // "foreign" "key"
+                        
+                        // 读取 (colName)
+                        std::string parenPart;
+                        fkSs >> parenPart; // "(colName)"
+                        if (parenPart.size() >= 2 && parenPart.front() == '(' && parenPart.back() == ')') {
+                            std::string fkCol = parenPart.substr(1, parenPart.size() - 2);
+                            
+                            std::string refKw;
+                            fkSs >> refKw; // "references"
+                            
+                            std::string refTableRef;
+                            fkSs >> refTableRef; // "parent_table(col)" or "parent_table"
+                            
+                            std::string refTable, refCol;
+                            size_t refParen = refTableRef.find('(');
+                            if (refParen != std::string::npos) {
+                                refTable = refTableRef.substr(0, refParen);
+                                size_t refParenEnd = refTableRef.find(')', refParen);
+                                if (refParenEnd != std::string::npos) {
+                                    refCol = refTableRef.substr(refParen + 1, refParenEnd - refParen - 1);
+                                }
+                            }
+                            
+                            bool cascade = false;
+                            std::string onKw, deleteKw;
+                            if (fkSs >> onKw >> deleteKw) {
+                                std::string cascadeKw;
+                                if (fkSs >> cascadeKw) {
+                                    cascade = (cascadeKw == "cascade");
+                                }
+                            }
+                            
+                            if (!fkCol.empty() && !refTable.empty() && !refCol.empty()) {
+                                ForeignKeyDef fk(fkCol, refTable, refCol, cascade);
+                                node->foreignKeys.push_back(fk);
+                            }
+                        }
+                        continue;
+                    }
 
                     std::stringstream defSs(colDef);
                     ColumnDef col;

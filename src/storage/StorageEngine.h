@@ -152,9 +152,10 @@ public:
 
     // ---- 表操作 ----
 
-    // 保存表元数据
+    // 保存表元数据（支持外键）
     ResultSet saveTableSchema(const std::string& dbName, const std::string& tableName,
-                               const ArrayList<Column>& columns) {
+                               const ArrayList<Column>& columns,
+                               const ArrayList<ForeignKeyDef>& foreignKeys = ArrayList<ForeignKeyDef>()) {
         std::string schemaFile = schemaFilePath(dbName);
         std::ofstream file(schemaFile, std::ios::app);
         if (!file.is_open()) {
@@ -165,7 +166,7 @@ public:
             }
         }
 
-        // 格式：tablename,colname,coltype,primary;...
+        // 格式：tablename,colname,coltype,primary,...[,FK:fkcol,reftable,refcol,cascade]...
         // 追加一行
         file << tableName;
         for (size_t i = 0; i < columns.size(); ++i) {
@@ -173,12 +174,19 @@ public:
             file << "," << (columns[i].type == DataType::INT ? "int" : "string");
             file << "," << (columns[i].isPrimaryKey ? "1" : "0");
         }
+        // 追加外键定义
+        for (size_t i = 0; i < foreignKeys.size(); ++i) {
+            file << ",FK:" << foreignKeys[i].column;
+            file << "," << foreignKeys[i].refTable;
+            file << "," << foreignKeys[i].refColumn;
+            file << "," << (foreignKeys[i].onDeleteCascade ? "1" : "0");
+        }
         file << "\n";
         file.close();
         return ResultSet(SUCCESS);
     }
 
-    // 加载表元数据
+    // 加载表元数据（遇到 FK: 标记自动停止）
     ArrayList<Column> loadTableSchema(const std::string& dbName, const std::string& tableName) {
         ArrayList<Column> columns;
         std::string schemaFile = schemaFilePath(dbName);
@@ -196,8 +204,10 @@ public:
             if (token != tableName) continue;
             found = true;
 
-            // 后续是列信息
+            // 后续是列信息，遇到 FK: 标记停止
             while (std::getline(ss, token, ',')) {
+                // 遇到外键标记，停止读取列
+                if (token.size() >= 3 && token.substr(0, 3) == "FK:") break;
                 Column col;
                 col.name = token;
                 if (!std::getline(ss, token, ',')) break;
@@ -210,6 +220,75 @@ public:
         }
         file.close();
         return columns;
+    }
+
+    // 加载表的外键定义
+    ArrayList<ForeignKeyDef> loadTableForeignKeys(const std::string& dbName, const std::string& tableName) {
+        ArrayList<ForeignKeyDef> fks;
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ifstream file(schemaFile);
+        if (!file.is_open()) return fks;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            std::stringstream ss(line);
+            std::string token;
+            std::getline(ss, token, ',');
+            if (token != tableName) continue;
+
+            // 跳过列定义直到 FK: 标记
+            while (std::getline(ss, token, ',')) {
+                if (token.size() >= 3 && token.substr(0, 3) == "FK:") {
+                    ForeignKeyDef fk;
+                    fk.column = token.substr(3);  // 去掉 "FK:" 前缀
+                    if (!std::getline(ss, token, ',')) break;
+                    fk.refTable = token;
+                    if (!std::getline(ss, token, ',')) break;
+                    fk.refColumn = token;
+                    if (!std::getline(ss, token, ',')) break;
+                    fk.onDeleteCascade = (token == "1");
+                    fks.push_back(fk);
+                }
+            }
+            break;
+        }
+        file.close();
+        return fks;
+    }
+
+    // 获取所有引用了指定表的表名（用于外键约束检查）
+    ArrayList<std::string> getReferencingTables(const std::string& dbName, const std::string& tableName) {
+        ArrayList<std::string> refTables;
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ifstream file(schemaFile);
+        if (!file.is_open()) return refTables;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty() || line.substr(0, 5) == "VIEW:") continue;
+            std::stringstream ss(line);
+            std::string token;
+            std::getline(ss, token, ',');
+            std::string thisTable = token;
+
+            // 查找 FK: 标记
+            while (std::getline(ss, token, ',')) {
+                if (token.size() >= 3 && token.substr(0, 3) == "FK:") {
+                    // 读取 refTable
+                    if (!std::getline(ss, token, ',')) break;
+                    if (token == tableName) {
+                        refTables.push_back(thisTable);
+                        break;
+                    }
+                    // 跳过 refColumn 和 cascade
+                    if (!std::getline(ss, token, ',')) break;
+                    if (!std::getline(ss, token, ',')) break;
+                }
+            }
+        }
+        file.close();
+        return refTables;
     }
 
     // 删除表元数据
