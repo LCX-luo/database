@@ -433,8 +433,8 @@ void testStorageAndExecutor() {
         assert(rs.code == SUCCESS);
         assert(rs.rows.size() == 1); // 经过 delete 后剩 1 行
         assert(rs.columns.size() == 2);
-        assert(rs.columns[0] == "id");
-        assert(rs.columns[1] == "name");
+        assert(rs.columns[0].name == "id");
+        assert(rs.columns[1].name == "name");
     }
     END_TEST;
 
@@ -586,6 +586,13 @@ void testForeignKey() {
         rs = executor.execute(*SQLParser().parse("insert tasks values(2, 1)"));
         assert(rs.code == SUCCESS);
         rs = executor.execute(*SQLParser().parse("insert tasks values(3, 2)"));
+        assert(rs.code == SUCCESS);
+    }
+    END_TEST;
+
+    TEST("Remove blocking FK references in employees") {
+        // employees 有非 CASCADE 的外键引用 dept_id=1，需要先解除阻塞
+        ResultSet rs = executor.execute(*SQLParser().parse("delete employees where dept_id = 1"));
         assert(rs.code == SUCCESS);
     }
     END_TEST;

@@ -514,7 +514,7 @@ Test 1: ArrayList basic operations ... PASS
 ...
 Test 60: Drop FK database ... PASS
 =======================================
-  Results: 60/60 tests passed
+  Results: 61/61 tests passed
 =======================================
 ```
 
