@@ -14,6 +14,7 @@
 #include "Column.h"
 #include "Row.h"
 #include "ResultSet.h"
+#include "../parser/ASTNode.h"
 
 namespace minidb {
 
@@ -254,6 +255,169 @@ public:
     // 获取所有数据库
     ArrayList<std::string> getDatabases() const {
         return databases_;
+    }
+
+    // ---- 视图操作 ----
+
+    // 视图定义在 schema.json 中以 VIEW: 前缀存储
+    // 格式: VIEW:viewname,col1,col2,...,sourcetable,condcol,condop,condval
+    // 例如: VIEW:good_student,id,name,age,student,age,=,20
+
+    // 保存视图定义
+    ResultSet saveViewDefinition(const std::string& dbName, const std::string& viewName,
+                                  const ArrayList<std::string>& selectColumns,
+                                  const std::string& sourceTable,
+                                  const Condition& condition) {
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ofstream file(schemaFile, std::ios::app);
+        if (!file.is_open()) {
+            file.open(schemaFile);
+            if (!file.is_open()) {
+                return ResultSet(ERR_GENERAL, "Failed to save view definition");
+            }
+        }
+
+        file << "VIEW:" << viewName;
+        for (size_t i = 0; i < selectColumns.size(); ++i) {
+            file << "," << selectColumns[i];
+        }
+        file << "," << sourceTable;
+        // 存储条件信息
+        if (condition.hasCondition) {
+            file << "," << condition.column;
+            file << "," << condition.op;
+            file << "," << condition.value;
+        }
+        file << "\n";
+        file.close();
+        return ResultSet(SUCCESS, "View created");
+    }
+
+    // 加载视图定义（返回完整行，由调用方解析）
+    // 返回格式：{viewName, [columns...], sourceTable, condColumn, condOp, condValue}
+    struct ViewDefinition {
+        std::string viewName;
+        ArrayList<std::string> selectColumns;
+        std::string sourceTable;
+        Condition condition;
+    };
+
+    ViewDefinition loadViewDefinition(const std::string& dbName, const std::string& viewName) {
+        ViewDefinition vd;
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ifstream file(schemaFile);
+        if (!file.is_open()) return vd;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            // 检查是否是 VIEW: 开头
+            if (line.substr(0, 5) != "VIEW:") continue;
+            std::string content = line.substr(5); // 去掉 "VIEW:"
+            std::stringstream ss(content);
+            std::string token;
+
+            // 第一个token是视图名
+            std::getline(ss, token, ',');
+            if (token != viewName) continue;
+
+            vd.viewName = viewName;
+
+            // 读取所有列直到最后一个分隔区为 sourcetable
+            // 格式: viewname,col1,col2,...,sourcetable[,condcol,condop,condval]
+            // 策略：先读所有token，sourceTable 是倒数第4个（无条件时就是最后一个）
+            ArrayList<std::string> allTokens;
+            while (std::getline(ss, token, ',')) {
+                allTokens.push_back(token);
+            }
+
+            if (allTokens.size() == 0) break;
+
+            // 检查是否有条件（至少 sourceTable + 3 个条件字段）
+            // 无条件: [col1, col2, ..., sourceTable]
+            // 有条件: [col1, col2, ..., sourceTable, condCol, condOp, condVal]
+            bool hasCondition = false;
+            size_t sourceTableIdx = allTokens.size() - 1;
+
+            // 尝试判断：如果最后三个token看起来像条件
+            if (allTokens.size() >= 4) {
+                std::string lastToken = allTokens[allTokens.size() - 1];
+                // 如果最后一个token是数字或带引号字符串，可能是条件值
+                if (!lastToken.empty() && (isdigit(lastToken[0]) || lastToken[0] == '"')) {
+                    hasCondition = true;
+                    sourceTableIdx = allTokens.size() - 4;
+                }
+            }
+
+            vd.sourceTable = allTokens[sourceTableIdx];
+
+            // 收集列
+            for (size_t i = 0; i < sourceTableIdx; ++i) {
+                vd.selectColumns.push_back(allTokens[i]);
+            }
+
+            // 解析条件
+            if (hasCondition && sourceTableIdx + 3 <= allTokens.size()) {
+                vd.condition.column = allTokens[sourceTableIdx + 1];
+                vd.condition.op = allTokens[sourceTableIdx + 2];
+                vd.condition.value = allTokens[sourceTableIdx + 3];
+                vd.condition.hasCondition = true;
+            }
+
+            break;
+        }
+        file.close();
+        return vd;
+    }
+
+    // 检查是否是视图
+    bool viewExists(const std::string& dbName, const std::string& viewName) {
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ifstream file(schemaFile);
+        if (!file.is_open()) return false;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.substr(0, 5) != "VIEW:") continue;
+            std::string content = line.substr(5);
+            std::stringstream ss(content);
+            std::string token;
+            std::getline(ss, token, ',');
+            if (token == viewName) {
+                file.close();
+                return true;
+            }
+        }
+        file.close();
+        return false;
+    }
+
+    // 删除视图定义
+    ResultSet removeViewDefinition(const std::string& dbName, const std::string& viewName) {
+        std::string schemaFile = schemaFilePath(dbName);
+        std::ifstream file(schemaFile);
+        if (!file.is_open()) return ResultSet(SUCCESS);
+
+        std::string content;
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.empty()) continue;
+            // 只过滤掉匹配的 VIEW 行
+            if (line.substr(0, 5) == "VIEW:") {
+                std::string rest = line.substr(5);
+                std::stringstream ss(rest);
+                std::string token;
+                std::getline(ss, token, ',');
+                if (token == viewName) continue; // 跳过此行
+            }
+            content += line + "\n";
+        }
+        file.close();
+
+        std::ofstream outFile(schemaFile, std::ios::trunc);
+        outFile << content;
+        outFile.close();
+        return ResultSet(SUCCESS, "View dropped");
     }
 
     // 获取数据库中所有表名

@@ -86,6 +86,10 @@ public:
                 return executeCreateTable(static_cast<const CreateTableNode&>(node));
             case StatementType::DROP_TABLE:
                 return executeDropTable(static_cast<const DropTableNode&>(node));
+            case StatementType::CREATE_VIEW:
+                return executeCreateView(static_cast<const CreateViewNode&>(node));
+            case StatementType::DROP_VIEW:
+                return executeDropView(static_cast<const DropViewNode&>(node));
             case StatementType::INSERT:
                 return executeInsert(static_cast<const InsertNode&>(node));
             case StatementType::SELECT:
@@ -200,6 +204,11 @@ private:
             return ResultSet(ERR_GENERAL, "No database selected");
         }
 
+        // 检查是否是视图查询
+        if (storage_.viewExists(dbName, node.tableName)) {
+            return executeSelectFromView(dbName, node);
+        }
+
         if (!storage_.tableExists(dbName, node.tableName)) {
             return ResultSet(ERR_NOT_FOUND, "Table '" + node.tableName + "' not found");
         }
@@ -231,6 +240,119 @@ private:
         }
 
         return table.select(node.columns, node.condition.column, op, whereVal);
+    }
+
+    // 创建视图
+    ResultSet executeCreateView(const CreateViewNode& node) {
+        std::string dbName = storage_.getCurrentDb();
+        if (dbName.empty()) {
+            return ResultSet(ERR_GENERAL, "No database selected");
+        }
+
+        // 检查视图名是否已存在
+        if (storage_.viewExists(dbName, node.viewName)) {
+            return ResultSet(ERR_EXISTS, "View '" + node.viewName + "' already exists");
+        }
+
+        // 检查源表是否存在
+        if (!storage_.tableExists(dbName, node.sourceTable)) {
+            return ResultSet(ERR_NOT_FOUND, "Table '" + node.sourceTable + "' not found");
+        }
+
+        // 保存视图定义
+        return storage_.saveViewDefinition(dbName, node.viewName,
+                                           node.selectColumns,
+                                           node.sourceTable,
+                                           node.condition);
+    }
+
+    // 删除视图
+    ResultSet executeDropView(const DropViewNode& node) {
+        std::string dbName = storage_.getCurrentDb();
+        if (dbName.empty()) {
+            return ResultSet(ERR_GENERAL, "No database selected");
+        }
+
+        if (!storage_.viewExists(dbName, node.viewName)) {
+            return ResultSet(ERR_NOT_FOUND, "View '" + node.viewName + "' not found");
+        }
+
+        return storage_.removeViewDefinition(dbName, node.viewName);
+    }
+
+    // 从视图查询（将视图展开为底层表查询）
+    ResultSet executeSelectFromView(const std::string& dbName, const SelectNode& node) {
+        // 加载视图定义
+        StorageEngine::ViewDefinition vd = storage_.loadViewDefinition(dbName, node.tableName);
+        if (vd.viewName.empty()) {
+            return ResultSet(ERR_NOT_FOUND, "View '" + node.tableName + "' not found");
+        }
+
+        // 检查源表是否存在
+        if (!storage_.tableExists(dbName, vd.sourceTable)) {
+            return ResultSet(ERR_NOT_FOUND, "Source table '" + vd.sourceTable + "' not found");
+        }
+
+        // 加载源表结构
+        ArrayList<Column> columns = storage_.loadTableSchema(dbName, vd.sourceTable);
+        std::string dataPath = storage_.getTableDataPath(dbName, vd.sourceTable);
+        std::string idxPath = storage_.getIndexFilePath(dbName, vd.sourceTable);
+
+        Table table(dbName, vd.sourceTable, columns, dataPath, idxPath);
+
+        // 确定要查询的列
+        // 如果用户查询 *，使用视图定义的列
+        // 否则使用用户指定的列（必须属于视图定义的列集）
+        ArrayList<std::string> queryColumns;
+        bool isStar = (node.columns.size() == 1 && node.columns[0] == "*");
+        if (isStar) {
+            queryColumns = vd.selectColumns;
+        } else {
+            queryColumns = node.columns;
+        }
+
+        // 组合 WHERE 条件：视图定义的条件 + 用户查询的条件
+        Operator op = Operator::NONE;
+        Value whereVal;
+        std::string whereColumn;
+
+        // 先使用视图定义的条件
+        if (vd.condition.hasCondition) {
+            whereColumn = vd.condition.column;
+            op = getOperator(vd.condition.op);
+            int colIdx = -1;
+            for (size_t i = 0; i < columns.size(); ++i) {
+                if (columns[i].name == vd.condition.column) {
+                    colIdx = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (colIdx >= 0) {
+                whereVal = parseValue(vd.condition.value, columns[colIdx].type);
+            } else {
+                whereVal = inferValue(vd.condition.value);
+            }
+        }
+
+        // 如果用户查询也有条件，覆盖或组合（此处简单覆盖，实际应 AND 合并）
+        if (node.condition.hasCondition) {
+            whereColumn = node.condition.column;
+            op = getOperator(node.condition.op);
+            int colIdx = -1;
+            for (size_t i = 0; i < columns.size(); ++i) {
+                if (columns[i].name == node.condition.column) {
+                    colIdx = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (colIdx >= 0) {
+                whereVal = parseValue(node.condition.value, columns[colIdx].type);
+            } else {
+                whereVal = inferValue(node.condition.value);
+            }
+        }
+
+        return table.select(queryColumns, whereColumn, op, whereVal);
     }
 
     ResultSet executeUpdate(const UpdateNode& node) {

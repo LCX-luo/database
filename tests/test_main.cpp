@@ -256,6 +256,45 @@ void testParser() {
         assert(node->type == StatementType::EXIT);
     }
     END_TEST;
+
+    TEST("Parse create view") {
+        auto node = parser.parse("create view v1 as select * from person");
+        assert(node != nullptr);
+        assert(node->type == StatementType::CREATE_VIEW);
+        auto* cvNode = static_cast<CreateViewNode*>(node.get());
+        assert(cvNode->viewName == "v1");
+        assert(cvNode->selectColumns.size() == 1);
+        assert(cvNode->selectColumns[0] == "*");
+        assert(cvNode->sourceTable == "person");
+        assert(!cvNode->condition.hasCondition);
+    }
+    END_TEST;
+
+    TEST("Parse create view with columns and where") {
+        auto node = parser.parse("create view v2 as select id, name from person where age > 18");
+        assert(node != nullptr);
+        assert(node->type == StatementType::CREATE_VIEW);
+        auto* cvNode = static_cast<CreateViewNode*>(node.get());
+        assert(cvNode->viewName == "v2");
+        assert(cvNode->selectColumns.size() == 2);
+        assert(cvNode->selectColumns[0] == "id");
+        assert(cvNode->selectColumns[1] == "name");
+        assert(cvNode->sourceTable == "person");
+        assert(cvNode->condition.hasCondition);
+        assert(cvNode->condition.column == "age");
+        assert(cvNode->condition.op == ">");
+        assert(cvNode->condition.value == "18");
+    }
+    END_TEST;
+
+    TEST("Parse drop view") {
+        auto node = parser.parse("drop view v1");
+        assert(node != nullptr);
+        assert(node->type == StatementType::DROP_VIEW);
+        auto* dvNode = static_cast<DropViewNode*>(node.get());
+        assert(dvNode->viewName == "v1");
+    }
+    END_TEST;
 }
 
 // ==================== 测试 B+树 ====================
@@ -378,6 +417,56 @@ void testStorageAndExecutor() {
         ResultSet rs = executor.execute(*SQLParser().parse("select * from person"));
         assert(rs.code == SUCCESS);
         assert(rs.rows.size() == 1);
+    }
+    END_TEST;
+
+    TEST("Create view") {
+        ResultSet rs = executor.execute(*SQLParser().parse("create view v_person as select id, name from person"));
+        assert(rs.code == SUCCESS);
+        // 验证视图定义已保存
+        assert(storage.viewExists("test_db", "v_person"));
+    }
+    END_TEST;
+
+    TEST("Select from view") {
+        ResultSet rs = executor.execute(*SQLParser().parse("select * from v_person"));
+        assert(rs.code == SUCCESS);
+        assert(rs.rows.size() == 1); // 经过 delete 后剩 1 行
+        assert(rs.columns.size() == 2);
+        assert(rs.columns[0] == "id");
+        assert(rs.columns[1] == "name");
+    }
+    END_TEST;
+
+    TEST("Select from view with user where") {
+        ResultSet rs = executor.execute(*SQLParser().parse("select * from v_person where id = 1001"));
+        assert(rs.code == SUCCESS);
+        assert(rs.rows.size() == 1);
+        assert(rs.rows[0][0].toString() == "1001");
+    }
+    END_TEST;
+
+    TEST("Create view with where clause") {
+        // 先插入一条数据供视图筛选
+        executor.execute(*SQLParser().parse("insert person values(1003, \"alice\")"));
+        ResultSet rs = executor.execute(*SQLParser().parse("create view v_adult as select * from person where id = 1001"));
+        assert(rs.code == SUCCESS);
+        assert(storage.viewExists("test_db", "v_adult"));
+    }
+    END_TEST;
+
+    TEST("Select from view with view where") {
+        ResultSet rs = executor.execute(*SQLParser().parse("select * from v_adult"));
+        assert(rs.code == SUCCESS);
+        assert(rs.rows.size() == 1); // 视图条件 id=1001
+        assert(rs.rows[0][0].toString() == "1001");
+    }
+    END_TEST;
+
+    TEST("Drop view") {
+        ResultSet rs = executor.execute(*SQLParser().parse("drop view v_person"));
+        assert(rs.code == SUCCESS);
+        assert(!storage.viewExists("test_db", "v_person"));
     }
     END_TEST;
 

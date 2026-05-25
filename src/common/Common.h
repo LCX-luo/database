@@ -35,6 +35,8 @@ enum class StatementType {
     USE_DATABASE,
     CREATE_TABLE,
     DROP_TABLE,
+    CREATE_VIEW,
+    DROP_VIEW,
     INSERT,
     SELECT,
     UPDATE,

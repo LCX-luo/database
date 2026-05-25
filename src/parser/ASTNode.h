@@ -78,12 +78,28 @@ struct InsertNode : ASTNode {
     InsertNode() : ASTNode(StatementType::INSERT) {}
 };
 
+// CREATE VIEW
+struct CreateViewNode : ASTNode {
+    std::string viewName;
+    ArrayList<std::string> selectColumns;  // 视图中保存的列
+    std::string sourceTable;
+    Condition condition;                    // 视图定义中的 WHERE 条件
+    CreateViewNode() : ASTNode(StatementType::CREATE_VIEW) {}
+};
+
+// DROP VIEW
+struct DropViewNode : ASTNode {
+    std::string viewName;
+    DropViewNode() : ASTNode(StatementType::DROP_VIEW) {}
+};
+
 // SELECT
 struct SelectNode : ASTNode {
     ArrayList<std::string> columns;  // 列名列表，或 ["*"]
     std::string tableName;
     Condition condition;
-    SelectNode() : ASTNode(StatementType::SELECT) {}
+    bool isFromView;                 // 标记是否从视图查询
+    SelectNode() : ASTNode(StatementType::SELECT), isFromView(false) {}
 };
 
 // UPDATE

@@ -23,7 +23,7 @@
 
 MiniDB 是一个**微型关系型数据库管理系统（Miniature Relational Database Management System）**，旨在通过从零实现数据库核心功能，深入理解关系数据库的原理与实现。项目对标 **MySQL** 的功能子集，覆盖了从 SQL 解析到数据持久化的完整链路。
 
-**核心能力**：创建/删除数据库和表、插入/查询/更新/删除数据、B+树索引加速查询、TCP/IP 网络通信。
+**核心能力**：创建/删除数据库和表、插入/查询/更新/删除数据、B+树索引加速查询、视图创建/删除/查询、TCP/IP 网络通信。
 
 ---
 
@@ -110,6 +110,8 @@ data/                           # 数据根目录
 | USE | `use <dbname>` | 切换当前数据库 |
 | CREATE TABLE | `create table <name> (<col> <type> [primary], ...)` | 创建表，支持 int/string，主键自动建B+树索引 |
 | DROP TABLE | `drop table <name>` | 删除表及索引文件 |
+| CREATE VIEW | `create view <name> as select <cols> from <table> [where <cond>]` | 创建视图，基于源表的虚拟表 |
+| DROP VIEW | `drop view <name>` | 删除视图定义 |
 
 ### DML（数据操作语言）
 
@@ -237,7 +239,51 @@ minidb> exit
 Bye
 ```
 
-### 3. 完整生命周期示例
+### 3. 视图操作
+
+```sql
+-- 创建视图
+minidb> create view v_student as select id, name from student
+View created
+
+-- 从视图查询（展开为底层表查询）
+minidb> select * from v_student
++---------+--------+
+| id      | name   |
++---------+--------+
+| 2024001 | 张三 |
+| 2024002 | 李四 |
++---------+--------+
+2 rows in set
+
+-- 从视图查询带条件
+minidb> select * from v_student where id = 2024001
++---------+--------+
+| id      | name   |
++---------+--------+
+| 2024001 | 张三 |
++---------+--------+
+1 row in set
+
+-- 创建视图（带 WHERE 条件）
+minidb> create view v_adult as select * from student where age > 18
+View created
+
+-- 查询带条件视图
+minidb> select * from v_adult
++---------+--------+-----+
+| id      | name   | age |
++---------+--------+-----+
+| 2024002 | 李四 | 22  |
++---------+--------+-----+
+1 row in set
+
+-- 删除视图
+minidb> drop view v_student
+View dropped
+```
+
+### 4. 完整生命周期示例
 
 ```bash
 # 终端1：启动服务端
@@ -341,7 +387,7 @@ database/                           # 项目根目录
 │       └── Client.h                # 客户端
 │
 ├── tests/                          # 单元测试
-│   └── test_main.cpp               # 33个测试用例
+│   └── test_main.cpp               # 42个测试用例
 │
 ├── build/                          # 构建输出
 │   ├── server                      # 服务端可执行文件
@@ -378,7 +424,7 @@ database/                           # 项目根目录
 **方式**：手写递归下降解析器
 - 词法分析：提取关键字和标识符
 - 语法分析：根据产生式构建 AST
-- 支持 9 种语句类型 + where 条件
+- 支持 11 种语句类型 + where 条件（含 CREATE/DROP VIEW）
 
 ### 4. 存储引擎
 
@@ -387,7 +433,17 @@ database/                           # 项目根目录
 - 元数据：CSV 格式 schema.json
 - B+树索引加速主键等值查询
 
-### 5. 网络通信
+### 5. 视图模块
+
+**原理**：视图是一种虚拟表，其内容由查询定义（存储的 SELECT 语句），不占用物理存储空间。
+
+**实现方式**：
+- 视图定义存储在 `schema.json` 中，以 `VIEW:` 前缀标识
+- 格式：`VIEW:viewname,col1,col2,...,sourcetable[,condcol,condop,condval]`
+- 查询视图时，`Executor` 检测表名是否为视图，自动展开为底层表查询
+- 支持带 WHERE 条件的视图定义，用户查询条件可与视图条件组合
+
+### 6. 网络通信
 
 - TCP Socket API
 - JSON 格式消息
@@ -406,9 +462,9 @@ database/                           # 项目根目录
 =======================================
 Test 1: ArrayList basic operations ... PASS
 ...
-Test 33: Drop database ... PASS
+Test 42: Drop database ... PASS
 =======================================
-  Results: 33/33 tests passed
+  Results: 42/42 tests passed
 =======================================
 ```
 
@@ -418,10 +474,10 @@ Test 33: Drop database ... PASS
 |:---|:---:|:---|
 | ArrayList | 4 | 基本操作、查找、拷贝、迭代器 |
 | Value | 4 | 创建、比较、序列化 |
-| SQLParser | 11 | 全部9种语句+where+列解析 |
+| SQLParser | 14 | 全部11种语句+where+视图解析 |
 | BPlusTree | 2 | 插入查找、中序遍历 |
-| 集成测试 | 12 | 完整数据库生命周期 |
-| **总计** | **33** | **全部通过** |
+| 集成测试 | 18 | 完整数据库生命周期+视图CRUD |
+| **总计** | **42** | **全部通过** |
 
 ---
 

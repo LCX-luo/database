@@ -22,6 +22,8 @@ namespace minidb {
  * - use <dbname>
  * - create table <name> (<col> <type> [primary], ...)
  * - drop table <name>
+ * - create view <name> as select <cols> from <table> [where <cond>]
+ * - drop view <name>
  * - insert <table> values(<val>, ...)
  * - select <col>|* from <table> [where <col> <op> <val>]
  * - update <table> set <col>=<val> [where <cond>]
@@ -75,10 +77,10 @@ public:
     }
 
 private:
-    // 解析 create database / create table
+    // 解析 create database / create table / create view
     std::unique_ptr<ASTNode> parseCreate(const std::string& original, const std::string& lower, std::stringstream& ss) {
         std::string keyword;
-        ss >> keyword;  // "database" or "table"
+        ss >> keyword;  // "database" or "table" or "view"
 
         if (keyword == "database") {
             std::string dbName;
@@ -88,6 +90,10 @@ private:
             auto node = std::make_unique<CreateDatabaseNode>();
             node->dbName = dbName;
             return node;
+        }
+
+        if (keyword == "view") {
+            return parseCreateView(original, lower, ss);
         }
 
         if (keyword == "table") {
@@ -141,10 +147,10 @@ private:
         return nullptr;
     }
 
-    // 解析 drop database / drop table
+    // 解析 drop database / drop table / drop view
     std::unique_ptr<ASTNode> parseDrop(const std::string& original, const std::string& lower, std::stringstream& ss) {
         std::string keyword;
-        ss >> keyword;  // "database" or "table"
+        ss >> keyword;  // "database" or "table" or "view"
 
         if (keyword == "database") {
             std::string dbName;
@@ -153,6 +159,16 @@ private:
 
             auto node = std::make_unique<DropDatabaseNode>();
             node->dbName = dbName;
+            return node;
+        }
+
+        if (keyword == "view") {
+            std::string viewName;
+            ss >> viewName;
+            if (viewName.empty()) return nullptr;
+
+            auto node = std::make_unique<DropViewNode>();
+            node->viewName = viewName;
             return node;
         }
 
@@ -332,6 +348,55 @@ private:
         cond.op = std::string(1, opChar);
         cond.value = trim(trimmed.substr(opPos + 1));
         cond.hasCondition = true;
+    }
+
+    // 解析 create view <name> as select <cols> from <table> [where <cond>]
+    std::unique_ptr<ASTNode> parseCreateView(const std::string& original, const std::string& lower, std::stringstream& ss) {
+        std::string viewName;
+        ss >> viewName;
+        if (viewName.empty()) return nullptr;
+
+        // 读取 "as"
+        std::string asKw;
+        ss >> asKw;
+        if (asKw != "as") return nullptr;
+
+        // 读取 "select"
+        std::string selectKw;
+        ss >> selectKw;
+        if (selectKw != "select") return nullptr;
+
+        auto node = std::make_unique<CreateViewNode>();
+        node->viewName = viewName;
+
+        // 解析 select 列（直到 "from"）
+        std::string token;
+        bool readingColumns = true;
+        while (ss >> token) {
+            if (token == "from") {
+                readingColumns = false;
+                continue;
+            }
+            if (readingColumns) {
+                if (!token.empty() && token.back() == ',') {
+                    token.pop_back();
+                }
+                node->selectColumns.push_back(token);
+            } else {
+                node->sourceTable = token;
+                break;
+            }
+        }
+
+        // 解析 where 条件（使用 original 保留大小写）
+        size_t wherePos = toLower(original).find(" where ");
+        if (wherePos != std::string::npos) {
+            std::string conditionStr = original.substr(wherePos + 7);
+            conditionStr = trim(conditionStr);
+            parseCondition(conditionStr, node->condition);
+        }
+
+        return node;
     }
 };
 
