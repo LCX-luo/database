@@ -31,9 +31,9 @@ include_directories(tests)
 add_executable(server ${COMMON_SOURCES})
 target_link_libraries(server pthread)
 
-# 客户端
+# 客户端（使用 GNU Readline 支持历史命令）
 add_executable(client ${CLIENT_SOURCES})
-target_link_libraries(client pthread)
+target_link_libraries(client pthread readline)
 
 # 单元测试
 add_executable(test_minidb tests/test_main.cpp)
